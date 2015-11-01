@@ -78,7 +78,7 @@ func main() {
 
 	fmt.Println(dbcluster)
 	for parition, _ := range dbcluster.Parition {
-		waitForNotification(dbcluster, parition)
+		go waitForNotification(dbcluster, parition)
 	}
 
 	// Here we just wait for kill signal
