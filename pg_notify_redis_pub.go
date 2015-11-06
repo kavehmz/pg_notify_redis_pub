@@ -28,33 +28,37 @@ type DBCluster struct {
 
 func checkErr(err error) {
 	if err != nil {
-		panic(err)
+		fmt.Println("Error:" + err.Error())
 	}
 }
 
-func publish(conn redis.Conn, payload []string) {
+func publish(redisdb redis.Conn, payload []string) {
 	m := make(map[string]string)
 
-	m["id"] = payload[0]
-	m["account_id"] = payload[1]
-	m["action_type"] = payload[2]
-	m["referrer_id"] = payload[3]
-	m["amount"] = payload[6]
-	m["balance_after"] = payload[7]
+	for k, v := range []string{"id", "account_id", "action_type", "referrer_type", "contract_id", "payment_id", "amount", "balance_after"} {
+		m[v] = payload[k]
+	}
 
 	jsonVal, _ := json.Marshal(m)
 	msg := string(jsonVal)
-	conn.Do("PUBLISH", "balance_"+m["account_id"], msg)
-	conn.Do("PUBLISH", m["action_type"]+"_"+m["account_id"], msg)
+
+	_, err := redisdb.Do("PING")
+	if err != nil {
+		redisdb, err = redis.DialURL(os.Getenv("REDIS_URL"))
+		checkErr(err)
+	}
+
+	redisdb.Do("PUBLISH", "balance_"+m["account_id"], msg)
+	redisdb.Do("PUBLISH", m["action_type"]+"_"+m["account_id"], msg)
 }
 
 func waitForNotification(dbcluter DBCluster, parition string) {
-	conninfo := fmt.Sprintf("postgres://%s:%s@%s/%s?sslmode=require", "read", dbcluter.Password, dbcluter.Parition[parition].Write.IP, "test")
+	conninfo := fmt.Sprintf("postgres://%s:%s@%s/%s?sslmode=require", "read", dbcluter.Password, dbcluter.Parition[parition].Write.IP, "clientdb")
 	listener := pq.NewListener(conninfo, 5*time.Second, 10*time.Second, nil)
-	err := listener.Listen("getwork")
+	err := listener.Listen("transactions_watcher")
 	checkErr(err)
-
 	fmt.Println("Listing to", parition)
+
 	redisdb, err := redis.DialURL(os.Getenv("REDIS_URL"))
 	checkErr(err)
 	var notification *pq.Notification
@@ -73,10 +77,10 @@ func waitForNotification(dbcluter DBCluster, parition string) {
 
 func main() {
 	var dbcluster DBCluster
-	source, _ := ioutil.ReadFile("db.yml")
+	source, err := ioutil.ReadFile("db.yml")
+	checkErr(err)
 	yaml.Unmarshal(source, &dbcluster)
 
-	fmt.Println(dbcluster)
 	for parition, _ := range dbcluster.Parition {
 		go waitForNotification(dbcluster, parition)
 	}
