@@ -1,8 +1,10 @@
 package main
 
 import (
+	"database/sql"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"os/signal"
 	"regexp"
@@ -11,7 +13,6 @@ import (
 	"io/ioutil"
 
 	"github.com/garyburd/redigo/redis"
-
 	"github.com/lib/pq"
 	"gopkg.in/yaml.v2"
 )
@@ -28,7 +29,21 @@ type DBCluster struct {
 
 func checkErr(err error) {
 	if err != nil {
-		fmt.Println("Error:" + err.Error())
+		log.Println(err)
+	}
+}
+
+func redisconn(redisdb *redis.Conn) {
+	if *redisdb == nil {
+		conn, err := redis.DialURL(os.Getenv("REDIS_URL"))
+		checkErr(err)
+		*redisdb = conn
+	}
+	_, err := (*redisdb).Do("PING")
+	if err != nil {
+		conn, err := redis.DialURL(os.Getenv("REDIS_URL"))
+		checkErr(err)
+		*redisdb = conn
 	}
 }
 
@@ -42,30 +57,30 @@ func publish(redisdb redis.Conn, payload []string) {
 	jsonVal, _ := json.Marshal(m)
 	msg := string(jsonVal)
 
-	_, err := redisdb.Do("PING")
-	if err != nil {
-		redisdb, err = redis.DialURL(os.Getenv("REDIS_URL"))
-		checkErr(err)
-	}
-
+	fmt.Println("Pushlishing ...")
 	redisdb.Do("PUBLISH", "balance_"+m["account_id"], msg)
 	redisdb.Do("PUBLISH", m["action_type"]+"_"+m["account_id"], msg)
 }
 
 func waitForNotification(dbcluter DBCluster, parition string) {
-	conninfo := fmt.Sprintf("postgres://%s:%s@%s/%s?sslmode=require", "read", dbcluter.Password, dbcluter.Parition[parition].Write.IP, "clientdb")
+	conninfo := fmt.Sprintf("postgres://%s:%s@%s/%s?sslmode=require", "read", dbcluter.Password, dbcluter.Parition[parition].Write.IP, "regentmarkets")
 	listener := pq.NewListener(conninfo, 5*time.Second, 10*time.Second, nil)
-	err := listener.Listen("transactions_watcher")
+	db, _ := sql.Open("postgres", conninfo)
+	err := db.Ping()
+	if err != nil {
+		log.Fatal(err)
+	}
+	err = listener.Listen("transactions_watcher")
 	checkErr(err)
 	fmt.Println("Listing to", parition)
 
-	redisdb, err := redis.DialURL(os.Getenv("REDIS_URL"))
-	checkErr(err)
+	var redisdb redis.Conn
 	var notification *pq.Notification
 	for {
 		select {
 		case notification = <-listener.Notify:
 			if notification != nil {
+				redisconn(&redisdb)
 				publish(redisdb, regexp.MustCompile(",").Split(notification.Extra, -1))
 			}
 
